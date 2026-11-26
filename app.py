@@ -478,14 +478,28 @@ def ask_gemini_rest(prompt, key, uploaded_file=None, is_voice=False):
 
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
-        b64_data = base64.b64encode(file_bytes).decode("utf-8")
-        mime_type = uploaded_file.type or "application/octet-stream"
-        parts.append({
-            "inline_data": {
-                "mime_type": mime_type,
-                "data": b64_data
-            }
-        })
+        fname_lower = uploaded_file.name.lower()
+        if fname_lower.endswith((".csv", ".txt", ".xml", ".st")):
+            # GX Works CSV(CP949/UTF-16) 및 일반 UTF-8 텍스트 자동 디코딩
+            decoded_text = None
+            for enc in ("utf-8-sig", "cp949", "utf-16", "euc-kr"):
+                try:
+                    decoded_text = file_bytes.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if decoded_text is None:
+                decoded_text = file_bytes.decode("utf-8", errors="replace")
+            parts.append({"text": f"### 첨부된 PLC 프로그램 파일 ({uploaded_file.name}):\n```\n{decoded_text}\n```"})
+        else:
+            b64_data = base64.b64encode(file_bytes).decode("utf-8")
+            mime_type = "application/pdf" if fname_lower.endswith(".pdf") else (uploaded_file.type or "application/octet-stream")
+            parts.append({
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": b64_data
+                }
+            })
 
     parts.append({"text": f"{system_instruction}\n\n### 질문:\n{prompt}"})
 
@@ -876,9 +890,9 @@ with st.sidebar:
 
     st.markdown("### 📎 현장 미디어 첨부")
     uploaded_file = st.file_uploader(
-        "사진·동영상·소리 파일을 올린 뒤 문자나 음성(`)으로 질문하세요.",
-        type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a"],
-        help="화면 캡처는 Win+Shift+S 후 저장된 파일을 드래그해서 올려주세요. (최대 20MB 권장)"
+        "사진·동영상·소리·PLC 프로그램(PDF/CSV/ST/TXT) 파일을 올린 뒤 질문하세요.",
+        type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a", "pdf", "csv", "txt", "xml", "st"],
+        help="화면 캡처는 Win+Shift+S 후 드래그하거나, GX Works CSV/PDF 파일을 올려주세요. (최대 20MB 권장)"
     )
 
     if uploaded_file is not None:
@@ -896,9 +910,9 @@ with st.sidebar:
                 st.audio(uploaded_file)
 
 raw_prompt = st.chat_input(
-    "질문을 입력하거나 파일 드래그 / 캡처 붙여넣기(Ctrl+V) / 음성(`) 질문하세요...",
+    "질문을 입력하거나 파일(PDF/CSV/ST/이미지) 드래그 / 캡처 붙여넣기(Ctrl+V) / 음성(`) 질문하세요...",
     accept_file=True,
-    file_type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a"]
+    file_type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a", "pdf", "csv", "txt", "xml", "st"]
 )
 
 def scroll_to_message(msg_index):
