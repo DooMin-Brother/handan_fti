@@ -49,8 +49,6 @@ div:has(> iframe[height="0"]) {
 
 if "auth_user" not in st.session_state:
     _, center_col, _ = st.columns([1, 2, 1])
-    if "auth_user" not in st.session_state:
-    _, center_col, _ = st.columns([1, 2, 1])
     with center_col:
         st.markdown("## 🔐 FTI 기술지원 AI 접속")
         st.caption("최초 신청 시 10일간 무료 체험이 즉시 시작됩니다.")
@@ -119,7 +117,6 @@ if "auth_user" not in st.session_state:
                         st.rerun()
                     else:
                         st.error(res.get("msg", "로그인에 실패했습니다."))
-
         st.stop()
 
 # Streamlit Secrets에서 API 키 자동 로드 (없으면 사이드바에서 직접 입력)
