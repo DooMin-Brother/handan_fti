@@ -1004,7 +1004,6 @@ if raw_prompt:
         with st.spinner(spinner_msg):
             answer_text = ask_gemini_rest(corrected_input, api_key, uploaded_file=active_file, is_voice=is_voice_query)
 
-        spacer_slot.empty()
         answer_slot.markdown(answer_text)
         st.session_state.messages.append({"role": "assistant", "content": answer_text})
         scroll_to_message(user_msg_idx)
