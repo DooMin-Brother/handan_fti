@@ -47,6 +47,11 @@ div:has(> iframe[height="0"]) {
 </style>
 """, unsafe_allow_html=True)
 
+if "auth_user" not in st.session_state:
+    _, center_col, _ = st.columns([1, 2, 1])
+    ...
+    st.stop()
+
 # Streamlit Secrets에서 API 키 자동 로드 (없으면 사이드바에서 직접 입력)
 default_api_key = st.secrets.get("GEMINI_API_KEY", "")
 with st.sidebar:
