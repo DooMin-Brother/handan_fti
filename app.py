@@ -132,17 +132,36 @@ if "auth_user" not in st.session_state:
                             st.error("업체명 / 담당자명을 입력해 주세요.")
                         else:
                             with st.spinner("등록 처리 중..."):
-                                res = requests.post(
-                                    st.secrets["AUTH_WEBHOOK_URL"],
-                                    json={
-                                        "action": "register",
-                                        "email": reg_email.strip(),
-                                        "company": reg_company.strip(),
-                                        "brands": ["ALL"],
-                                        "phone": reg_phone.strip(),
-                                    },
-                                    timeout=15,
-                                ).json()
+                                webhook_url = str(st.secrets.get("AUTH_WEBHOOK_URL", "")).strip()
+                                try:
+                                    resp = requests.post(
+                                        webhook_url,
+                                        json={
+                                            "action": "register",
+                                            "email": reg_email.strip(),
+                                            "company": reg_company.strip(),
+                                            "brands": ["ALL"],
+                                            "phone": reg_phone.strip(),
+                                        },
+                                        timeout=20,
+                                        allow_redirects=True,
+                                    )
+                                    raw_text = (resp.text or "").strip()
+                                    if not raw_text:
+                                        res = {
+                                            "ok": False,
+                                            "msg": f"빈 응답 수신 (HTTP {resp.status_code})",
+                                        }
+                                    else:
+                                        res = resp.json()
+                                except requests.RequestException as e:
+                                    res = {"ok": False, "msg": f"네트워크 요청 오류: {e}"}
+                                except ValueError:
+                                    res = {
+                                        "ok": False,
+                                        "msg": f"JSON 파싱 실패 (HTTP {resp.status_code}): {(resp.text or '')[:200]}",
+                                    }
+
                             if res.get("ok"):
                                 clean_email = reg_email.strip().lower()
                                 st.session_state.auth_user = {
@@ -167,15 +186,34 @@ if "auth_user" not in st.session_state:
                             st.error("등록된 이메일을 입력해 주세요.")
                         else:
                             with st.spinner("확인 중..."):
-                                res = requests.post(
-                                    st.secrets["AUTH_WEBHOOK_URL"],
-                                    json={
-                                        "action": "login",
-                                        "email": login_email.strip(),
-                                        "code": login_code.strip(),
-                                    },
-                                    timeout=15,
-                                ).json()
+                                webhook_url = str(st.secrets.get("AUTH_WEBHOOK_URL", "")).strip()
+                                try:
+                                    resp = requests.post(
+                                        webhook_url,
+                                        json={
+                                            "action": "login",
+                                            "email": login_email.strip(),
+                                            "code": login_code.strip(),
+                                        },
+                                        timeout=20,
+                                        allow_redirects=True,
+                                    )
+                                    raw_text = (resp.text or "").strip()
+                                    if not raw_text:
+                                        res = {
+                                            "ok": False,
+                                            "msg": f"빈 응답 수신 (HTTP {resp.status_code})",
+                                        }
+                                    else:
+                                        res = resp.json()
+                                except requests.RequestException as e:
+                                    res = {"ok": False, "msg": f"네트워크 요청 오류: {e}"}
+                                except ValueError:
+                                    res = {
+                                        "ok": False,
+                                        "msg": f"JSON 파싱 실패 (HTTP {resp.status_code}): {(resp.text or '')[:200]}",
+                                    }
+
                             if res.get("ok"):
                                 clean_email = login_email.strip().lower()
                                 st.session_state.auth_user = {
@@ -192,7 +230,7 @@ if "auth_user" not in st.session_state:
                             else:
                                 st.error(res.get("msg", "로그인에 실패했습니다."))
 
-    st.stop()
+            st.stop()
 
 # Streamlit Secrets에서 API 키 자동 로드 (없으면 사이드바에서 직접 입력)
 default_api_key = st.secrets.get("GEMINI_API_KEY", "")
