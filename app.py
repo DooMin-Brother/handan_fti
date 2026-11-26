@@ -907,13 +907,7 @@ with st.sidebar:
                 st.error(f"'{f.name}' 크기({file_mb:.1f}MB)가 20MB를 초과해 제외되었습니다.")
             else:
                 valid_files.append(f)
-                st.caption(f"첨부됨: {f.name} ({file_mb:.1f}MB)")
-                if f.type.startswith("image/"):
-                    st.image(f, use_container_width=True)
-                elif f.type.startswith("video/"):
-                    st.video(f)
-                elif f.type.startswith("audio/"):
-                    st.audio(f)
+                st.caption(f"📎 {f.name} ({file_mb:.1f}MB)")
         uploaded_file = valid_files
 
 raw_prompt = st.chat_input(
