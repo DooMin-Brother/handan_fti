@@ -455,7 +455,7 @@ def ask_gemini_rest(prompt, key, uploaded_file=None, is_voice=False):
     t_pick = 0.0
     t_slice = 0.0
 
-    if uploaded_file is not None and not has_en_keyword and not selected_pdfs:
+    if uploaded_file and not has_en_keyword and not selected_pdfs:
         slice_bytes, ref_info = None, []
     else:
         t1 = time.perf_counter()
@@ -476,30 +476,32 @@ def ask_gemini_rest(prompt, key, uploaded_file=None, is_voice=False):
             }
         })
 
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        fname_lower = uploaded_file.name.lower()
-        if fname_lower.endswith((".csv", ".txt", ".xml", ".st")):
-            # GX Works CSV(CP949/UTF-16) 및 일반 UTF-8 텍스트 자동 디코딩
-            decoded_text = None
-            for enc in ("utf-8-sig", "cp949", "utf-16", "euc-kr"):
-                try:
-                    decoded_text = file_bytes.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if decoded_text is None:
-                decoded_text = file_bytes.decode("utf-8", errors="replace")
-            parts.append({"text": f"### 첨부된 PLC 프로그램 파일 ({uploaded_file.name}):\n```\n{decoded_text}\n```"})
-        else:
-            b64_data = base64.b64encode(file_bytes).decode("utf-8")
-            mime_type = "application/pdf" if fname_lower.endswith(".pdf") else (uploaded_file.type or "application/octet-stream")
-            parts.append({
-                "inline_data": {
-                    "mime_type": mime_type,
-                    "data": b64_data
-                }
-            })
+    if uploaded_file:
+        files_to_send = uploaded_file if isinstance(uploaded_file, list) else [uploaded_file]
+        for f in files_to_send:
+            file_bytes = f.getvalue()
+            fname_lower = f.name.lower()
+            if fname_lower.endswith((".csv", ".txt", ".xml", ".st")):
+                # GX Works CSV(CP949/UTF-16) 및 일반 UTF-8 텍스트 자동 디코딩
+                decoded_text = None
+                for enc in ("utf-8-sig", "cp949", "utf-16", "euc-kr"):
+                    try:
+                        decoded_text = file_bytes.decode(enc)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if decoded_text is None:
+                    decoded_text = file_bytes.decode("utf-8", errors="replace")
+                parts.append({"text": f"### 첨부된 PLC 프로그램 파일 ({f.name}):\n```\n{decoded_text}\n```"})
+            else:
+                b64_data = base64.b64encode(file_bytes).decode("utf-8")
+                mime_type = "application/pdf" if fname_lower.endswith(".pdf") else (f.type or "application/octet-stream")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": b64_data
+                    }
+                })
 
     parts.append({"text": f"{system_instruction}\n\n### 질문:\n{prompt}"})
 
@@ -826,45 +828,46 @@ with st.sidebar:
             return;
         }
 
-        const deleteBtn = pDoc.querySelector('[data-testid="stFileUploaderDeleteBtn"] button');
-        if (deleteBtn) deleteBtn.click();
+        const video = pWin._ftiVideo;
+        const canvas = pDoc.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        setTimeout(() => {
-            const video = pWin._ftiVideo;
-            const canvas = pDoc.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const bstr = atob(dataUrl.split(',')[1]);
+        const u8arr = new Uint8Array(bstr.length);
+        for (let i = 0; i < bstr.length; i++) u8arr[i] = bstr.charCodeAt(i);
 
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-            const bstr = atob(dataUrl.split(',')[1]);
-            const u8arr = new Uint8Array(bstr.length);
-            for (let i = 0; i < bstr.length; i++) u8arr[i] = bstr.charCodeAt(i);
+        const file = new File([u8arr], `plc_screen_${Date.now()}.jpg`, { type: 'image/jpeg' });
+        const dropzone = pDoc.querySelector('[data-testid="stFileUploaderDropzone"]');
+        const fileInput = pDoc.querySelector('[data-testid="stFileUploaderDropzoneInput"]');
+        const timeStr = new Date().toLocaleTimeString('ko-KR');
 
-            const file = new File([u8arr], `plc_screen_${Date.now()}.jpg`, { type: 'image/jpeg' });
+        if (dropzone) {
             const dt = new DataTransfer();
             dt.items.add(file);
-
-            const dropzone = pDoc.querySelector('[data-testid="stFileUploaderDropzone"]');
-            const fileInput = pDoc.querySelector('[data-testid="stFileUploaderDropzoneInput"]');
-            const timeStr = new Date().toLocaleTimeString('ko-KR');
-
-            if (dropzone) {
-                const dropEvent = new DragEvent('drop', {
-                    bubbles: true,
-                    cancelable: true,
-                    dataTransfer: dt
-                });
-                dropzone.dispatchEvent(dropEvent);
-                statusEl.textContent = `✅ 첨부 완료 (${timeStr})`;
-            } else if (fileInput) {
-                fileInput.files = dt.files;
-                fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                statusEl.textContent = `✅ 첨부 완료 (${timeStr})`;
-            } else {
-                statusEl.textContent = "⚠️ 파일 업로더를 찾지 못했습니다.";
+            const dropEvent = new DragEvent('drop', {
+                bubbles: true,
+                cancelable: true,
+                dataTransfer: dt
+            });
+            dropzone.dispatchEvent(dropEvent);
+            statusEl.textContent = `✅ 누적 첨부 완료 (${timeStr})`;
+        } else if (fileInput) {
+            const dt = new DataTransfer();
+            if (fileInput.files) {
+                for (let i = 0; i < fileInput.files.length; i++) {
+                    dt.items.add(fileInput.files[i]);
+                }
             }
-        }, deleteBtn ? 250 : 0);
+            dt.items.add(file);
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+            statusEl.textContent = `✅ 누적 첨부 완료 (${timeStr})`;
+        } else {
+            statusEl.textContent = "⚠️ 파일 업로더를 찾지 못했습니다.";
+        }
     }
 
     btnCapture.onclick = captureToChat;
@@ -892,26 +895,30 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "사진·동영상·소리·PLC 프로그램(PDF/CSV/ST/TXT) 파일을 올린 뒤 질문하세요.",
         type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a", "pdf", "csv", "txt", "xml", "st"],
-        help="화면 캡처는 Win+Shift+S 후 드래그하거나, GX Works CSV/PDF 파일을 올려주세요. (최대 20MB 권장)"
+        accept_multiple_files=True,
+        help="화면 캡처는 Win+Shift+S 후 드래그하거나, GX Works CSV/PDF 파일을 올려주세요. (여러 장 누적 첨부 가능, 최대 20MB 권장)"
     )
 
-    if uploaded_file is not None:
-        file_mb = uploaded_file.size / (1024 * 1024)
-        if file_mb > 20:
-            st.error(f"파일 크기({file_mb:.1f}MB)가 20MB를 초과했습니다. 동영상을 10~30초 이내로 줄여주세요.")
-            uploaded_file = None
-        else:
-            st.caption(f"첨부됨: {uploaded_file.name} ({file_mb:.1f}MB)")
-            if uploaded_file.type.startswith("image/"):
-                st.image(uploaded_file, use_container_width=True)
-            elif uploaded_file.type.startswith("video/"):
-                st.video(uploaded_file)
-            elif uploaded_file.type.startswith("audio/"):
-                st.audio(uploaded_file)
+    if uploaded_file:
+        valid_files = []
+        for f in uploaded_file:
+            file_mb = f.size / (1024 * 1024)
+            if file_mb > 20:
+                st.error(f"'{f.name}' 크기({file_mb:.1f}MB)가 20MB를 초과해 제외되었습니다.")
+            else:
+                valid_files.append(f)
+                st.caption(f"첨부됨: {f.name} ({file_mb:.1f}MB)")
+                if f.type.startswith("image/"):
+                    st.image(f, use_container_width=True)
+                elif f.type.startswith("video/"):
+                    st.video(f)
+                elif f.type.startswith("audio/"):
+                    st.audio(f)
+        uploaded_file = valid_files
 
 raw_prompt = st.chat_input(
     "질문을 입력하거나 파일(PDF/CSV/ST/이미지) 드래그 / 캡처 붙여넣기(Ctrl+V) / 음성(`) 질문하세요...",
-    accept_file=True,
+    accept_file="multiple",
     file_type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a", "pdf", "csv", "txt", "xml", "st"]
 )
 
@@ -990,7 +997,7 @@ def render_file_badge(file_obj):
 
 if raw_prompt:
     user_input = raw_prompt.text
-    active_file = raw_prompt.files[0] if raw_prompt.files else uploaded_file
+    active_file = list(raw_prompt.files) if raw_prompt.files else (list(uploaded_file) if uploaded_file else [])
 
     if not user_input and active_file:
         user_input = "이 첨부 파일을 분석하고 문제점이나 핵심 내용을 설명해 줘."
@@ -1002,7 +1009,8 @@ if raw_prompt:
 
     corrected_input = apply_fa_corrections(user_input)
 
-    file_label = f"📎 **첨부 파일:** `{active_file.name}`\n\n" if active_file else ""
+    file_names = ", ".join(f"`{f.name}`" for f in active_file)
+    file_label = f"📎 **첨부 파일 ({len(active_file)}개):** {file_names}\n\n" if active_file else ""
     st.session_state.messages.append({"role": "user", "content": file_label + corrected_input})
     user_msg_idx = len(st.session_state.messages) - 1
 
@@ -1024,11 +1032,12 @@ if raw_prompt:
 
     with st.chat_message("user"):
         if active_file:
-            render_file_badge(active_file)
+            for f in active_file:
+                render_file_badge(f)
         st.markdown(corrected_input)
     scroll_to_message(user_msg_idx)
 
-    spinner_msg = f"📎 '{active_file.name}' 파일을 함께 분석하고 있습니다..." if active_file else "FTI가 대답을 찾고 있습니다..."
+    spinner_msg = f"📎 첨부 파일 {len(active_file)}개를 함께 분석하고 있습니다..." if active_file else "FTI가 대답을 찾고 있습니다..."
     with st.chat_message("assistant"):
         with st.spinner(spinner_msg):
             answer_text = ask_gemini_rest(corrected_input, api_key, uploaded_file=active_file, is_voice=is_voice_query)
