@@ -17,6 +17,14 @@ try:
 except ImportError:
     HAS_EDGE_TTS = False
 
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    HAS_GDRIVE = True
+except ImportError:
+    HAS_GDRIVE = False
+
 st.set_page_config(page_title="한단제어기술 FTI", page_icon="⚙️", layout="wide")
 
 st.markdown("""
@@ -46,8 +54,71 @@ with st.sidebar:
         type="password"
     )
 
-# 대소문자 구분(Linux 서버) 방지: Manuals 또는 manuals 폴더 자동 인식
+# 로컬 폴백 폴더 (Secrets가 없는 로컬 테스트용)
 MANUALS_DIR = "Manuals" if os.path.exists("Manuals") else "manuals"
+
+# ---------------------------------------------------------
+# [0] 구글 드라이브 연동 함수 (Service Account)
+# ---------------------------------------------------------
+def has_drive_secrets():
+    return (
+        HAS_GDRIVE
+        and "GCP_SERVICE_ACCOUNT_JSON" in st.secrets
+        and "DRIVE_FOLDER_ID" in st.secrets
+    )
+
+@st.cache_resource
+def get_drive_service():
+    """서비스 계정 JSON으로 Google Drive API 클라이언트 생성"""
+    sa_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+    creds = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+@st.cache_data(ttl=600, show_spinner="구글 드라이브 매뉴얼 목록 불러오는 중...")
+def get_drive_pdfs(root_folder_id):
+    """구글 드라이브 폴더 및 하위 폴더의 모든 PDF를 {상대경로: 파일ID} 딕셔너리로 수집"""
+    service = get_drive_service()
+    pdf_map = {}
+
+    def walk_folder(folder_id, prefix=""):
+        page_token = None
+        while True:
+            resp = service.files().list(
+                q=f"'{folder_id}' in parents and trashed = false",
+                fields="nextPageToken, files(id, name, mimeType)",
+                pageSize=1000,
+                pageToken=page_token,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+            for item in resp.get("files", []):
+                name = item["name"]
+                rel_path = f"{prefix}/{name}" if prefix else name
+                if item["mimeType"] == "application/vnd.google-apps.folder":
+                    walk_folder(item["id"], rel_path)
+                elif name.lower().endswith(".pdf"):
+                    pdf_map[rel_path] = item["id"]
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+    walk_folder(root_folder_id)
+    return dict(sorted(pdf_map.items()))
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def download_drive_pdf(file_id):
+    """구글 드라이브에서 특정 PDF 파일을 바이트로 다운로드 (최대 20개 메모리 캐싱)"""
+    service = get_drive_service()
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return fh.getvalue()
 
 def apply_fa_corrections(text):
     """음성인식(STT) FA 전문 용어 오인식 보정"""
@@ -74,16 +145,16 @@ def apply_fa_corrections(text):
 # ---------------------------------------------------------
 # [1] AI 파일 라우터 + 스마트 PDF 슬라이싱 + Gemini REST API 호출 함수
 # ---------------------------------------------------------
-def get_all_pdfs(base_dir):
-    """Manuals 및 모든 하위 폴더에서 PDF 상대 경로 목록 수집"""
-    pdf_files = []
+def get_local_pdfs(base_dir):
+    """로컬 Manuals 폴더 폴백용"""
+    pdf_map = {}
     if os.path.exists(base_dir):
         for root, _, files in os.walk(base_dir):
             for f in files:
                 if f.lower().endswith(".pdf"):
                     rel_path = os.path.relpath(os.path.join(root, f), base_dir)
-                    pdf_files.append(rel_path)
-    return sorted(pdf_files)
+                    pdf_map[rel_path] = None
+    return dict(sorted(pdf_map.items()))
 
 STT_SHEET_ID = "1BL1hBiAauAa_oLnyRNsqMrOQpRGtmlqgzHq7ZiARTmY"
 
@@ -147,11 +218,16 @@ def pick_pdfs_with_ai(prompt, all_pdfs, key):
     except Exception:
         return []
 
-@st.cache_data(show_spinner=False)
-def get_pdf_pages_text(filepath):
-    """PDF 페이지별 텍스트를 최초 1회만 추출해 메모리에 캐싱"""
+@st.cache_data(show_spinner=False, max_entries=30)
+def get_pdf_pages_text(rel_path, file_id=None):
+    """PDF 페이지별 텍스트를 최초 1회만 추출해 메모리에 캐싱 (드라이브/로컬 겸용)"""
     pages = []
-    doc = fitz.open(filepath)
+    if file_id:
+        pdf_bytes = download_drive_pdf(file_id)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    else:
+        filepath = os.path.join(MANUALS_DIR, rel_path)
+        doc = fitz.open(filepath)
     for pno in range(len(doc)):
         pages.append(doc[pno].get_text("text") or "")
     doc.close()
@@ -179,7 +255,7 @@ def extract_commands_from_image(img_bytes, mime_type, key):
     except Exception:
         return ""
 
-def extract_relevant_pdf_slice(prompt, target_pdfs, max_pages=6):
+def extract_relevant_pdf_slice(prompt, target_pdfs, pdf_id_map, max_pages=6):
     """선별된 PDF 본문에서 목차를 제외하고 질문 키워드가 집중된 본문 페이지만 오려냄"""
     stop_words = {"대해", "대해서", "설명해", "설명해줘", "알려줘", "뭐야", "무엇", "어떻게", "프로그램에서", "설정", "방법", "있어", "해줘"}
     en_tokens = re.findall(r'[A-Za-z][A-Za-z0-9_]{1,}', prompt)
@@ -190,11 +266,11 @@ def extract_relevant_pdf_slice(prompt, target_pdfs, max_pages=6):
 
     scored_pages = []
     for rel_path in target_pdfs:
-        filepath = os.path.join(MANUALS_DIR, rel_path)
-        if not os.path.exists(filepath):
+        file_id = pdf_id_map.get(rel_path)
+        if not file_id and not os.path.exists(os.path.join(MANUALS_DIR, rel_path)):
             continue
         try:
-            pages_text = get_pdf_pages_text(filepath)
+            pages_text = get_pdf_pages_text(rel_path, file_id=file_id)
             for pno, text in enumerate(pages_text):
                 if not text:
                     continue
@@ -247,8 +323,11 @@ def extract_relevant_pdf_slice(prompt, target_pdfs, max_pages=6):
     out_doc = fitz.open()
     ref_info = []
     for rel_path, pnos in selected_map.items():
-        filepath = os.path.join(MANUALS_DIR, rel_path)
-        src_doc = fitz.open(filepath)
+        file_id = pdf_id_map.get(rel_path)
+        if file_id:
+            src_doc = fitz.open(stream=download_drive_pdf(file_id), filetype="pdf")
+        else:
+            src_doc = fitz.open(os.path.join(MANUALS_DIR, rel_path))
         valid_pnos = sorted([p for p in pnos if 0 <= p < len(src_doc)])
         for p in valid_pnos:
             out_doc.insert_pdf(src_doc, from_page=p, to_page=p)
@@ -265,11 +344,31 @@ def extract_relevant_pdf_slice(prompt, target_pdfs, max_pages=6):
     out_doc.close()
     return pdf_bytes, ref_info
 
+# 구글 드라이브 우선 로드 (실패 시 로컬 폴더 폴백)
+drive_mode = False
+drive_error = None
+if has_drive_secrets():
+    try:
+        pdf_id_map = get_drive_pdfs(st.secrets["DRIVE_FOLDER_ID"])
+        drive_mode = True
+    except Exception as e:
+        drive_error = str(e)
+        pdf_id_map = get_local_pdfs(MANUALS_DIR)
+else:
+    pdf_id_map = get_local_pdfs(MANUALS_DIR)
+
+all_pdfs = list(pdf_id_map.keys())
+
 # 좌측 사이드바: 비워두면 AI 자동 선택, 필요 시 특정 PDF만 수동 지정
-all_pdfs = get_all_pdfs(MANUALS_DIR)
 with st.sidebar:
     st.markdown("---")
-    st.markdown(f"### 📚 원문 PDF 매뉴얼 ({len(all_pdfs)}개 인식)")
+    source_badge = "☁️ Google Drive" if drive_mode else "💻 로컬"
+    st.markdown(f"### 📚 원문 PDF 매뉴얼 ({len(all_pdfs)}개 인식 · {source_badge})")
+    if drive_error:
+        st.warning(f"드라이브 연동 오류: {drive_error}")
+    if drive_mode and st.button("🔄 매뉴얼 목록 새로고침", use_container_width=True):
+        get_drive_pdfs.clear()
+        st.rerun()
     selected_pdfs = st.multiselect(
         "특정 매뉴얼만 검색 (비워두면 AI가 자동 선택)",
         options=all_pdfs,
@@ -336,7 +435,7 @@ def ask_gemini_rest(prompt, key, uploaded_file=None, is_voice=False):
         t_pick = time.perf_counter() - t1
 
         t2 = time.perf_counter()
-        slice_bytes, ref_info = extract_relevant_pdf_slice(prompt, search_targets, max_pages=6)
+        slice_bytes, ref_info = extract_relevant_pdf_slice(prompt, search_targets, pdf_id_map, max_pages=6)
         t_slice = time.perf_counter() - t2
 
     if slice_bytes:

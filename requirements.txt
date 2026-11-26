@@ -1,3 +1,7 @@
 streamlit
 pymupdf
 edge-tts
+
+google-auth
+google-api-python-client
+gspread
