@@ -41,6 +41,9 @@ div:has(> iframe[height="0"]) {
 [data-stale="true"] {
     opacity: 1 !important;
 }
+[data-testid="stMainBlockContainer"] {
+    padding-bottom: 75vh !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,13 +111,13 @@ def get_drive_pdfs(root_folder_id):
     walk_folder(root_folder_id)
     return dict(sorted(pdf_map.items()))
 
-@st.cache_data(show_spinner=False, max_entries=20)
+@st.cache_data(show_spinner=False, max_entries=30)
 def download_drive_pdf(file_id):
-    """구글 드라이브에서 특정 PDF 파일을 바이트로 다운로드 (최대 20개 메모리 캐싱)"""
+    """구글 드라이브에서 특정 PDF 파일을 20MB 청크 단위로 고속 다운로드 및 캐싱"""
     service = get_drive_service()
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request, chunksize=20 * 1024 * 1024)
     done = False
     while not done:
         _, done = downloader.next_chunk()
@@ -220,7 +223,7 @@ def pick_pdfs_with_ai(prompt, all_pdfs, key):
 
 @st.cache_data(show_spinner=False, max_entries=30)
 def get_pdf_pages_text(rel_path, file_id=None):
-    """PDF 페이지별 텍스트를 최초 1회만 추출해 메모리에 캐싱 (드라이브/로컬 겸용)"""
+    """PDF 페이지별 순수 텍스트만 경량 추출해 메모리에 캐싱 (드라이브/로컬 겸용)"""
     pages = []
     if file_id:
         pdf_bytes = download_drive_pdf(file_id)
@@ -229,7 +232,7 @@ def get_pdf_pages_text(rel_path, file_id=None):
         filepath = os.path.join(MANUALS_DIR, rel_path)
         doc = fitz.open(filepath)
     for pno in range(len(doc)):
-        pages.append(doc[pno].get_text("text") or "")
+        pages.append(doc[pno].get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE) or "")
     doc.close()
     return pages
 
@@ -255,12 +258,31 @@ def extract_commands_from_image(img_bytes, mime_type, key):
     except Exception:
         return ""
 
-def extract_relevant_pdf_slice(prompt, target_pdfs, pdf_id_map, max_pages=6):
+def extract_relevant_pdf_slice(prompt, target_pdfs, pdf_id_map, max_pages=6, stop_after_first_hit=True):
     """선별된 PDF 본문에서 목차를 제외하고 질문 키워드가 집중된 본문 페이지만 오려냄"""
     stop_words = {"대해", "대해서", "설명해", "설명해줘", "알려줘", "뭐야", "무엇", "어떻게", "프로그램에서", "설정", "방법", "있어", "해줘"}
     en_tokens = re.findall(r'[A-Za-z][A-Za-z0-9_]{1,}', prompt)
     ko_tokens = [w for w in re.findall(r'[가-힣]{2,}', prompt) if w not in stop_words]
-    keywords = list(dict.fromkeys(en_tokens + ko_tokens))
+
+    # 영문 FA 용어를 한글 매뉴얼 표기로 자동 확장
+    en_to_ko_map = {
+        "INDEX": ["인덱스", "인덱스 레지스터", "Z0"],
+        "REGISTER": ["레지스터"],
+        "INTERRUPT": ["인터럽트"],
+        "TIMER": ["타이머"],
+        "COUNTER": ["카운터"],
+        "SERVO": ["서보"],
+        "ALARM": ["알람"],
+        "ERROR": ["에러", "오류"],
+        "CAM": ["캠"],
+        "ENCODER": ["엔코더"],
+    }
+    extra_tokens = []
+    for tok in en_tokens:
+        if tok.upper() in en_to_ko_map:
+            extra_tokens.extend(en_to_ko_map[tok.upper()])
+
+    keywords = list(dict.fromkeys(en_tokens + ko_tokens + extra_tokens))
     if not keywords:
         return None, []
 
@@ -269,6 +291,7 @@ def extract_relevant_pdf_slice(prompt, target_pdfs, pdf_id_map, max_pages=6):
         file_id = pdf_id_map.get(rel_path)
         if not file_id and not os.path.exists(os.path.join(MANUALS_DIR, rel_path)):
             continue
+        file_scored = []
         try:
             pages_text = get_pdf_pages_text(rel_path, file_id=file_id)
             for pno, text in enumerate(pages_text):
@@ -299,9 +322,14 @@ def extract_relevant_pdf_slice(prompt, target_pdfs, pdf_id_map, max_pages=6):
                     if is_toc:
                         score -= 40
                     if score > 0:
-                        scored_pages.append((score, rel_path, pno))
+                        file_scored.append((score, rel_path, pno))
         except Exception:
             continue
+
+        scored_pages.extend(file_scored)
+        # 1순위 매뉴얼에서 충분한 본문 일치 페이지를 찾으면 2순위 PDF 다운로드 생략
+        if stop_after_first_hit and file_scored and max(x[0] for x in file_scored) >= 20:
+            break
 
     if not scored_pages:
         return None, []
@@ -435,7 +463,9 @@ def ask_gemini_rest(prompt, key, uploaded_file=None, is_voice=False):
         t_pick = time.perf_counter() - t1
 
         t2 = time.perf_counter()
-        slice_bytes, ref_info = extract_relevant_pdf_slice(prompt, search_targets, pdf_id_map, max_pages=6)
+        slice_bytes, ref_info = extract_relevant_pdf_slice(
+            prompt, search_targets, pdf_id_map, max_pages=6, stop_after_first_hit=(not selected_pdfs)
+        )
         t_slice = time.perf_counter() - t2
 
     if slice_bytes:
@@ -871,29 +901,31 @@ raw_prompt = st.chat_input(
     file_type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm", "mp3", "wav", "m4a"]
 )
 
-def scroll_to_latest(align="end"):
-    """방금 한 질문이 화면 최상단에 보이도록 강제 고정"""
-    expected_count = len(st.session_state.get("messages", []))
+def scroll_to_message(msg_index):
+    """지정한 번호의 메시지(방금 한 질문)를 화면 최상단으로 즉시 고정"""
+    import time
+    nonce = time.time_ns()
     components.html(f"""
     <script>
-    function forceScroll() {{
-        const doc = window.parent.document;
-        const messages = doc.querySelectorAll('[data-testid="stChatMessage"]');
-        if (messages.length < {expected_count} || messages.length === 0) return;
-
-        const target = ('{align}' === 'start' && messages.length >= 2)
-            ? messages[messages.length - 2]
-            : messages[messages.length - 1];
-
-        if (target) {{
-            target.style.scrollMarginTop = '80px';
-            target.scrollIntoView({{ behavior: 'auto', block: 'start' }});
-        }}
-    }}
-    forceScroll();
-    requestAnimationFrame(forceScroll);
-    setTimeout(forceScroll, 300);
-    setTimeout(forceScroll, 1000);
+    // nonce: {nonce}
+    (function() {{
+        let tries = 0;
+        const timer = setInterval(() => {{
+            tries++;
+            const doc = window.parent.document;
+            const main = doc.querySelector('[data-testid="stMain"]');
+            const messages = doc.querySelectorAll('[data-testid="stChatMessage"]');
+            const target = messages[{msg_index}];
+            if (main && target) {{
+                const mainRect = main.getBoundingClientRect();
+                const targetRect = target.getBoundingClientRect();
+                const topPos = main.scrollTop + (targetRect.top - mainRect.top) - 60;
+                main.scrollTo({{ top: Math.max(0, topPos), behavior: 'instant' }});
+                if (tries >= 6) clearInterval(timer);
+            }}
+            if (tries >= 20) clearInterval(timer);
+        }}, 50);
+    }})();
     </script>
     """, height=0)
 
@@ -937,6 +969,7 @@ if raw_prompt:
 
     file_label = f"📎 **첨부 파일:** `{active_file.name}`\n\n" if active_file else ""
     st.session_state.messages.append({"role": "user", "content": file_label + corrected_input})
+    user_msg_idx = len(st.session_state.messages) - 1
 
     components.html("""
     <script>
@@ -958,7 +991,7 @@ if raw_prompt:
         if active_file:
             render_file_badge(active_file)
         st.markdown(corrected_input)
-    scroll_to_latest("end")
+    scroll_to_message(user_msg_idx)
 
     spinner_msg = f"📎 '{active_file.name}' 파일을 함께 분석하고 있습니다..." if active_file else "FTI가 대답을 찾고 있습니다..."
     with st.chat_message("assistant"):
@@ -967,7 +1000,14 @@ if raw_prompt:
 
         st.markdown(answer_text)
         st.session_state.messages.append({"role": "assistant", "content": answer_text})
-        scroll_to_latest("start")
+
+        with st.spinner(spinner_msg):
+            answer_text = ask_gemini_rest(corrected_input, api_key, uploaded_file=active_file, is_voice=is_voice_query)
+
+        spacer_slot.empty()
+        answer_slot.markdown(answer_text)
+        st.session_state.messages.append({"role": "assistant", "content": answer_text})
+        scroll_to_message(user_msg_idx)
 
         if is_voice_query:
             tts_slot = st.empty()
