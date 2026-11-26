@@ -72,7 +72,7 @@ if "auth_user" not in st.session_state:
                     if "@" not in reg_email or "." not in reg_email:
                         st.error("올바른 이메일 주소를 입력해 주세요.")
                     elif not reg_company.strip() or not reg_brands:
-                        st.error("업체명과 주요 사용 브랜드를 입력해 주세요.")
+                        st.error("업체명과 사용 제품 브랜드를 입력해 주세요.")
                     else:
                         with st.spinner("등록 처리 중..."):
                             res = requests.post(
