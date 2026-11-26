@@ -49,8 +49,78 @@ div:has(> iframe[height="0"]) {
 
 if "auth_user" not in st.session_state:
     _, center_col, _ = st.columns([1, 2, 1])
-    ...
-    st.stop()
+    if "auth_user" not in st.session_state:
+    _, center_col, _ = st.columns([1, 2, 1])
+    with center_col:
+        st.markdown("## 🔐 FTI 기술지원 AI 접속")
+        st.caption("최초 신청 시 10일간 무료 체험이 즉시 시작됩니다.")
+
+        tab1, tab2 = st.tabs(["🆕 10일 무료 체험 신청", "🔑 기존 사용자 / 코드 로그인"])
+
+        with tab1:
+            with st.form("register_form"):
+                reg_email = st.text_input("이메일 (필수)", placeholder="example@company.co.kr")
+                reg_company = st.text_input("업체명 / 담당자명 (필수)", placeholder="예: 한단제어기술 / 홍길동 과장")
+                reg_brands = st.multiselect(
+                    "주요 사용 브랜드 (필수)",
+                    ["미쓰비시", "이노밴스", "스토버", "보쉬렉스로스", "킨코", "키엔스"],
+                    placeholder="사용 중인 브랜드를 선택하세요"
+                )
+                reg_phone = st.text_input("연락처 (선택)", placeholder="010-0000-0000")
+                submitted = st.form_submit_button("제출하고 10일 무료 체험 시작", use_container_width=True, type="primary")
+
+                if submitted:
+                    if "@" not in reg_email or "." not in reg_email:
+                        st.error("올바른 이메일 주소를 입력해 주세요.")
+                    elif not reg_company.strip() or not reg_brands:
+                        st.error("업체명과 주요 사용 브랜드를 입력해 주세요.")
+                    else:
+                        with st.spinner("등록 처리 중..."):
+                            res = requests.post(
+                                st.secrets["AUTH_WEBHOOK_URL"],
+                                json={
+                                    "action": "register",
+                                    "email": reg_email,
+                                    "company": reg_company,
+                                    "brands": reg_brands,
+                                    "phone": reg_phone,
+                                },
+                                timeout=15
+                            ).json()
+                        if res.get("ok"):
+                            st.session_state.auth_user = {
+                                "email": reg_email,
+                                "allowed_products": res["allowed_products"],
+                                "expire_date": res["expire_date"]
+                            }
+                            st.rerun()
+                        else:
+                            st.error(res.get("msg", "등록에 실패했습니다."))
+
+        with tab2:
+            with st.form("login_form"):
+                login_email = st.text_input("등록된 이메일", placeholder="example@company.co.kr")
+                login_code = st.text_input("인증코드 (체험 기간 중이면 비워두세요)", type="password")
+                login_btn = st.form_submit_button("접속하기", use_container_width=True, type="primary")
+
+                if login_btn:
+                    with st.spinner("확인 중..."):
+                        res = requests.post(
+                            st.secrets["AUTH_WEBHOOK_URL"],
+                            json={"action": "login", "email": login_email, "code": login_code},
+                            timeout=15
+                        ).json()
+                    if res.get("ok"):
+                        st.session_state.auth_user = {
+                            "email": login_email,
+                            "allowed_products": res["allowed_products"],
+                            "expire_date": res["expire_date"]
+                        }
+                        st.rerun()
+                    else:
+                        st.error(res.get("msg", "로그인에 실패했습니다."))
+
+        st.stop()
 
 # Streamlit Secrets에서 API 키 자동 로드 (없으면 사이드바에서 직접 입력)
 default_api_key = st.secrets.get("GEMINI_API_KEY", "")
