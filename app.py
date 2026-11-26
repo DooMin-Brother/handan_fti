@@ -60,19 +60,14 @@ if "auth_user" not in st.session_state:
             with st.form("register_form"):
                 reg_email = st.text_input("이메일 (필수)", placeholder="example@company.co.kr")
                 reg_company = st.text_input("업체명 / 담당자명 (필수)", placeholder="예: 한단제어기술 / 홍길동 과장")
-                reg_brands = st.multiselect(
-                    "기술지원 제품 브랜드 (필수)",
-                    ["미쓰비시", "이노밴스", "스토버", "보쉬렉스로스", "킨코", "키엔스"],
-                    placeholder="기술지원이 필요한 브랜드를 선택하세요"
-                )
                 reg_phone = st.text_input("연락처 (선택)", placeholder="010-0000-0000")
                 submitted = st.form_submit_button("제출하고 10일 무료 체험 시작", use_container_width=True, type="primary")
 
                 if submitted:
                     if "@" not in reg_email or "." not in reg_email:
                         st.error("올바른 이메일 주소를 입력해 주세요.")
-                    elif not reg_company.strip() or not reg_brands:
-                        st.error("업체명과 사용 제품 브랜드를 입력해 주세요.")
+                    elif not reg_company.strip():
+                        st.error("업체명 / 담당자명을 입력해 주세요.")
                     else:
                         with st.spinner("등록 처리 중..."):
                             res = requests.post(
@@ -81,7 +76,7 @@ if "auth_user" not in st.session_state:
                                     "action": "register",
                                     "email": reg_email,
                                     "company": reg_company,
-                                    "brands": reg_brands,
+                                    "brands": ["ALL"],
                                     "phone": reg_phone,
                                 },
                                 timeout=15
