@@ -916,7 +916,7 @@ raw_prompt = st.chat_input(
 )
 
 def scroll_to_message(msg_index):
-    """지정한 번호의 메시지(방금 한 질문)를 화면 최상단으로 즉시 고정"""
+    """실제 스크롤 영역을 자동 탐색해 방금 한 질문을 화면 최상단에 고정"""
     import time
     nonce = time.time_ns()
     components.html(f"""
@@ -924,21 +924,42 @@ def scroll_to_message(msg_index):
     // nonce: {nonce}
     (function() {{
         let tries = 0;
+        let userScrolled = false;
+        const pWin = window.parent;
+        const doc = pWin.document;
+
+        const stopScroll = () => {{ userScrolled = true; }};
+        pWin.addEventListener('wheel', stopScroll, {{ once: true, passive: true, capture: true }});
+        pWin.addEventListener('touchstart', stopScroll, {{ once: true, passive: true, capture: true }});
+
+        function getScrollContainer(el) {{
+            let cur = el.parentElement;
+            while (cur && cur !== doc.body) {{
+                const ov = pWin.getComputedStyle(cur).overflowY;
+                if ((ov === 'auto' || ov === 'scroll') && cur.scrollHeight > cur.clientHeight + 10) {{
+                    return cur;
+                }}
+                cur = cur.parentElement;
+            }}
+            return doc.scrollingElement || doc.documentElement;
+        }}
+
         const timer = setInterval(() => {{
             tries++;
-            const doc = window.parent.document;
-            const main = doc.querySelector('[data-testid="stMain"]');
+            if (userScrolled || tries > 15) {{
+                clearInterval(timer);
+                return;
+            }}
             const messages = doc.querySelectorAll('[data-testid="stChatMessage"]');
             const target = messages[{msg_index}];
-            if (main && target) {{
-                const mainRect = main.getBoundingClientRect();
-                const targetRect = target.getBoundingClientRect();
-                const topPos = main.scrollTop + (targetRect.top - mainRect.top) - 60;
-                main.scrollTo({{ top: Math.max(0, topPos), behavior: 'instant' }});
-                if (tries >= 6) clearInterval(timer);
+            if (target) {{
+                const scroller = getScrollContainer(target);
+                const sRect = scroller.getBoundingClientRect ? scroller.getBoundingClientRect() : {{ top: 0 }};
+                const tRect = target.getBoundingClientRect();
+                const topPos = scroller.scrollTop + (tRect.top - sRect.top) - 80;
+                scroller.scrollTop = Math.max(0, topPos);
             }}
-            if (tries >= 20) clearInterval(timer);
-        }}, 50);
+        }}, 100);
     }})();
     </script>
     """, height=0)
@@ -1009,12 +1030,6 @@ if raw_prompt:
 
     spinner_msg = f"📎 '{active_file.name}' 파일을 함께 분석하고 있습니다..." if active_file else "FTI가 대답을 찾고 있습니다..."
     with st.chat_message("assistant"):
-        with st.spinner(spinner_msg):
-            answer_text = ask_gemini_rest(corrected_input, api_key, uploaded_file=active_file, is_voice=is_voice_query)
-
-        st.markdown(answer_text)
-        st.session_state.messages.append({"role": "assistant", "content": answer_text})
-
         with st.spinner(spinner_msg):
             answer_text = ask_gemini_rest(corrected_input, api_key, uploaded_file=active_file, is_voice=is_voice_query)
 
