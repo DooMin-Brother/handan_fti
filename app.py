@@ -3,6 +3,7 @@ import re
 import csv
 import io
 import json
+import requests
 import base64
 import asyncio
 import urllib.request
@@ -117,7 +118,8 @@ if "auth_user" not in st.session_state:
                         st.rerun()
                     else:
                         st.error(res.get("msg", "로그인에 실패했습니다."))
-        st.stop()
+
+    st.stop()
 
 # Streamlit Secrets에서 API 키 자동 로드 (없으면 사이드바에서 직접 입력)
 default_api_key = st.secrets.get("GEMINI_API_KEY", "")
