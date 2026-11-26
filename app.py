@@ -49,70 +49,148 @@ div:has(> iframe[height="0"]) {
 """, unsafe_allow_html=True)
 
 if "auth_user" not in st.session_state:
+    st.session_state.setdefault("auth_expired", False)
+    query_email = str(st.query_params.get("u", "")).strip().lower()
+
+    if query_email and "AUTH_WEBHOOK_URL" in st.secrets:
+        try:
+            auto_res = requests.post(
+                st.secrets["AUTH_WEBHOOK_URL"],
+                json={"action": "login", "email": query_email, "code": ""},
+                timeout=10,
+            ).json()
+            if auto_res.get("ok"):
+                st.session_state.auth_user = {
+                    "email": query_email,
+                    "allowed_products": auto_res.get("allowed_products", "ALL"),
+                    "expire_date": auto_res.get("expire_date", ""),
+                }
+                st.session_state.auth_expired = False
+                st.rerun()
+            elif auto_res.get("reason") == "EXPIRED":
+                st.session_state.auth_expired = True
+        except Exception:
+            pass
+
     _, center_col, _ = st.columns([1, 2, 1])
     with center_col:
         st.markdown("## 🔐 FTI 기술지원 AI 접속")
-        st.caption("최초 신청 시 10일간 무료 체험이 즉시 시작됩니다.")
 
-        tab1, tab2 = st.tabs(["🆕 10일 무료 체험 신청", "🔑 기존 사용자 / 코드 로그인"])
+        if st.session_state.auth_expired:
+            st.warning(
+                "사용 기간이 만료되었습니다. 인증코드를 handancity@handancity.co.kr에 신청하여 부여 받고 인증코드를 입력하세요."
+            )
+            with st.form("expired_code_login_form"):
+                login_email = st.text_input(
+                    "등록된 이메일",
+                    value=query_email,
+                    placeholder="example@company.co.kr",
+                )
+                login_code = st.text_input("인증코드", type="password")
+                login_btn = st.form_submit_button("인증코드로 접속하기", use_container_width=True, type="primary")
 
-        with tab1:
-            with st.form("register_form"):
-                reg_email = st.text_input("이메일 (필수)", placeholder="example@company.co.kr")
-                reg_company = st.text_input("업체명 / 담당자명 (필수)", placeholder="예: 한단제어기술 / 홍길동 과장")
-                reg_phone = st.text_input("연락처 (선택)", placeholder="010-0000-0000")
-                submitted = st.form_submit_button("제출하고 10일 무료 체험 시작", use_container_width=True, type="primary")
-
-                if submitted:
-                    if "@" not in reg_email or "." not in reg_email:
-                        st.error("올바른 이메일 주소를 입력해 주세요.")
-                    elif not reg_company.strip():
-                        st.error("업체명 / 담당자명을 입력해 주세요.")
+                if login_btn:
+                    if not login_email.strip() or not login_code.strip():
+                        st.error("등록된 이메일과 인증코드를 모두 입력해 주세요.")
                     else:
-                        with st.spinner("등록 처리 중..."):
+                        with st.spinner("인증코드 확인 중..."):
                             res = requests.post(
                                 st.secrets["AUTH_WEBHOOK_URL"],
                                 json={
-                                    "action": "register",
-                                    "email": reg_email,
-                                    "company": reg_company,
-                                    "brands": ["ALL"],
-                                    "phone": reg_phone,
+                                    "action": "login",
+                                    "email": login_email.strip(),
+                                    "code": login_code.strip(),
                                 },
-                                timeout=15
+                                timeout=15,
                             ).json()
                         if res.get("ok"):
                             st.session_state.auth_user = {
-                                "email": reg_email,
-                                "allowed_products": res["allowed_products"],
-                                "expire_date": res["expire_date"]
+                                "email": login_email.strip().lower(),
+                                "allowed_products": res.get("allowed_products", "ALL"),
+                                "expire_date": res.get("expire_date", ""),
                             }
+                            st.session_state.auth_expired = False
+                            st.query_params["u"] = login_email.strip().lower()
                             st.rerun()
                         else:
-                            st.error(res.get("msg", "등록에 실패했습니다."))
+                            st.error(res.get("msg", "인증에 실패했습니다."))
+        else:
+            st.caption("최초 신청 시 10일간 무료 체험이 즉시 시작됩니다.")
+            tab1, tab2 = st.tabs(["🆕 10일 무료 체험 신청", "🔑 기존 사용자 / 코드 로그인"])
 
-        with tab2:
-            with st.form("login_form"):
-                login_email = st.text_input("등록된 이메일", placeholder="example@company.co.kr")
-                login_code = st.text_input("인증코드 (체험 기간 중이면 비워두세요)", type="password")
-                login_btn = st.form_submit_button("접속하기", use_container_width=True, type="primary")
+            with tab1:
+                with st.form("register_form"):
+                    reg_email = st.text_input("이메일 (필수)", placeholder="example@company.co.kr")
+                    reg_company = st.text_input("업체명 / 담당자명 (필수)", placeholder="예: 한단제어기술 / 홍길동 과장")
+                    reg_phone = st.text_input("연락처 (선택)", placeholder="010-0000-0000")
+                    submitted = st.form_submit_button("제출하고 10일 무료 체험 시작", use_container_width=True, type="primary")
 
-                if login_btn:
-                    with st.spinner("확인 중..."):
-                        res = requests.post(
-                            st.secrets["AUTH_WEBHOOK_URL"],
-                            json={"action": "login", "email": login_email, "code": login_code},
-                            timeout=15
-                        ).json()
-                    if res.get("ok"):
-                        st.session_state.auth_user = {
-                            "email": login_email,
-                            "allowed_products": res["allowed_products"],
-                            "expire_date": res["expire_date"]
-                        }
-                        st.rerun()
-                    else:
-                        st.error(res.get("msg", "로그인에 실패했습니다."))
+                    if submitted:
+                        if "@" not in reg_email or "." not in reg_email:
+                            st.error("올바른 이메일 주소를 입력해 주세요.")
+                        elif not reg_company.strip():
+                            st.error("업체명 / 담당자명을 입력해 주세요.")
+                        else:
+                            with st.spinner("등록 처리 중..."):
+                                res = requests.post(
+                                    st.secrets["AUTH_WEBHOOK_URL"],
+                                    json={
+                                        "action": "register",
+                                        "email": reg_email.strip(),
+                                        "company": reg_company.strip(),
+                                        "brands": ["ALL"],
+                                        "phone": reg_phone.strip(),
+                                    },
+                                    timeout=15,
+                                ).json()
+                            if res.get("ok"):
+                                clean_email = reg_email.strip().lower()
+                                st.session_state.auth_user = {
+                                    "email": clean_email,
+                                    "allowed_products": res.get("allowed_products", "ALL"),
+                                    "expire_date": res.get("expire_date", ""),
+                                }
+                                st.session_state.auth_expired = False
+                                st.query_params["u"] = clean_email
+                                st.rerun()
+                            else:
+                                st.error(res.get("msg", "등록에 실패했습니다."))
+
+            with tab2:
+                with st.form("login_form"):
+                    login_email = st.text_input("등록된 이메일", value=query_email, placeholder="example@company.co.kr")
+                    login_code = st.text_input("인증코드 (체험 기간 중이면 비워두세요)", type="password")
+                    login_btn = st.form_submit_button("접속하기", use_container_width=True, type="primary")
+
+                    if login_btn:
+                        if not login_email.strip():
+                            st.error("등록된 이메일을 입력해 주세요.")
+                        else:
+                            with st.spinner("확인 중..."):
+                                res = requests.post(
+                                    st.secrets["AUTH_WEBHOOK_URL"],
+                                    json={
+                                        "action": "login",
+                                        "email": login_email.strip(),
+                                        "code": login_code.strip(),
+                                    },
+                                    timeout=15,
+                                ).json()
+                            if res.get("ok"):
+                                clean_email = login_email.strip().lower()
+                                st.session_state.auth_user = {
+                                    "email": clean_email,
+                                    "allowed_products": res.get("allowed_products", "ALL"),
+                                    "expire_date": res.get("expire_date", ""),
+                                }
+                                st.session_state.auth_expired = False
+                                st.query_params["u"] = clean_email
+                                st.rerun()
+                            elif res.get("reason") == "EXPIRED":
+                                st.session_state.auth_expired = True
+                                st.rerun()
+                            else:
+                                st.error(res.get("msg", "로그인에 실패했습니다."))
 
     st.stop()
 
